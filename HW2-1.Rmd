@@ -1,0 +1,191 @@
+---
+title: "HW2"
+author: "Irene, Teena, Trang"
+date: "4/18/2020"
+output: 
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+pkgs <- list("tidyverse","glmnet", "doParallel", "foreach", "pROC", "DescTools","tidyr", "mltools","data.table", "splitstackshape", "caret")
+lapply(pkgs, require, character.only = T)
+registerDoParallel(cores = 4)
+library(keras)
+library(tensorflow)
+library(Sequential)
+library(modelr)
+library(MLeval)
+library(plotROC)
+library(PRROC)
+library(tidyquant)
+```
+
+# Load Data
+```{r data}
+#read in csv and if blank data make NA
+d <- read.csv('Data.csv',na.strings=c("","NA"))
+#d <- read.csv('Data.csv')
+dim(d)
+```
+# Clean Data
+```{r clean data}
+#remove rows with all NA
+ind <- apply(d, 1, function(x) all(is.na(x)))
+d <- d[!ind, ]
+
+#find flag 0 and 1 and resample data
+one_df <- d[which(d$Flag ==1),]
+zero_df <- d[which(d$Flag ==0),]
+perct_na_row <- rowSums(is.na(zero_df))/ ncol(zero_df)
+sorttest <- sort(perct_na_row, decreasing = T, index.return=T)
+zero_df2<- zero_df[perct_na_row < sorttest$x[28000],]
+rm_rows_d <- rbind.data.frame(zero_df2,one_df)
+
+#remove columns that have 20% NA
+rm_cols_d <- rm_rows_d[,(colSums(is.na(rm_rows_d))/ nrow(rm_rows_d)) <0.2]
+dim(rm_cols_d)
+
+#find factor columns
+col_types <- sapply(rm_cols_d,class)
+indx <- which(col_types=="factor") 
+
+#reassign NA by mode function or mean function
+f <- function(x){
+  x[is.na(x)]<- Mode(x, na.rm = T)[1]
+  return (x)}
+
+f2 <- function(x){
+  x[is.na(x)]<- mean(x, na.rm = T)[1]
+  return (x)}
+
+num_df <- rm_cols_d[,-indx]
+num_df <- apply(num_df,2,f2)
+cat_df <- rm_cols_d[,indx]
+cat_df <-apply(cat_df,2,f)
+
+
+#Assign characters data to numeric 
+num_df2 <- apply(num_df,2,as.numeric)
+
+#one hot encoding for categorical data
+cat_df <- as.data.frame(apply(cat_df,2, factor))
+cat_df$ID <- seq(1:nrow(cat_df))
+cat_df_id <- cat_df %>% select(ID, everything())
+cat_df_hc <- one_hot(data.table(cat_df_id))
+cat_df_hc <- as.data.frame(cat_df_hc[,-"ID"])
+
+#keep columns that have 70% of data(1)
+colnames_catdf <- colnames(cat_df_hc)
+keep_col <- lapply(1:ncol(cat_df_hc), function(x){
+  if(length(which(cat_df_hc[,x]==1)) > .70*nrow(cat_df_hc)){colnames_catdf[x]}})
+cat_df_hc <- subset(cat_df_hc, select = unlist(keep_col))
+final_df <- as.data.frame(cbind(num_df2,cat_df_hc))
+```
+
+# Select Features with Lasso
+```{r feature selection}
+#LASSO model with Alpha =1
+set.seed(123)
+lambdaRange <- 10^seq(-2,2, length = 100)
+x <- as.matrix(dplyr::select(final_df, -c(Flag)))
+lassoMod <- glmnet(x, as.matrix(final_df$Flag), alpha =1, lambda =  lambdaRange, standardize = T)
+cv.out <- cv.glmnet(x,as.matrix(final_df$Flag), alpha=1)
+(bestLambda = cv.out$lambda.1se)
+coeff_feat <- as.matrix(coef(cv.out, bestLambda))
+```
+# List Features
+```{r get features}
+#find all colnames that are not equal to zero in lasso model
+f3 <- function(x){
+  if (coeff_feat[x] != 0){feat_to_use <- dimnames(coeff_feat)[[1]][x]}
+}
+final_feat_names <- unlist(lapply(1:nrow(coeff_feat), f3))[-1]
+length(final_feat_names)
+write.csv(final_feat_names,"final_column_names.csv")
+```
+
+# Normalize numeric data
+```{r normalize data}
+#gaussian normalization of my numerical data
+norm_df <- final_df[,final_feat_names]
+len <- apply(norm_df,2, function(x){length(unique(x))})
+scaleObj <- preProcess(norm_df[,which(len > 2)], method = c("center","scale"))
+norm_df[,which(len > 2)] <- predict(scaleObj, norm_df[,which(len > 2)])
+```
+# Neural Network Model
+```{r model}
+#create neural network model
+model1 <- keras_model_sequential() 
+  layer_dense(model1,units = 32, activation = "relu", input_shape = ncol(norm_df))
+layer_dropout(model1,rate = 0.5) 
+layer_dense(model1,units = 32, activation = "relu") 
+layer_dropout(model1,rate = 0.5) 
+layer_dense(model1,units = 2, activation = 'sigmoid')
+
+model1 %>% compile(
+  loss = 'binary_crossentropy',
+  optimizer ="rmsprop",
+  metrics = c('accuracy')
+)
+```
+
+#Stratified Sampling: Test and Train
+```{r stratified sampling}
+#split train and test into stratified samples
+model_d <- cbind(norm_df,final_df$Flag)
+colnames(model_d) <- c(colnames(norm_df), "Flag")
+
+trainIndex <- createDataPartition(model_d$Flag, p = .7, list = FALSE, times = 1)
+
+train <- as.data.frame(model_d[trainIndex,])
+test <-  as.data.frame(model_d[-trainIndex,])
+x_train <- train[,-train$Flag]
+y_train <- train$Flag
+x_test <- test[,-test$Flag]
+y_test <- test$Flag
+```
+
+# Fit Model
+```{r fit function}
+#fit my neural network
+final_model <- model1 %>% fit(
+  as.matrix(x_train), to_categorical(as.matrix(y_train)), 
+  epochs = 20, batch_size = 128, 
+  validation_split = 0.2,verbose =1
+)
+
+```
+
+# Predict
+```{r confusion matrix}
+predictions <- model1 %>% predict_classes(as.matrix(x_test))
+conf <- confusionMatrix(as.factor(predictions),as.factor(y_test))
+print(conf)
+sensitivity <- conf$table[1]/ (conf$table[1] + conf$table[2])
+print(paste0("Sensitivity = ", sensitivity))
+specificity <- conf$table[4]/ (conf$table[3] + conf$table[4])
+print(paste0("Specificity = ", round(specificity,4)))
+```
+
+# Plot ROC
+```{r plot ROC}
+PRROC_obj <- roc.curve(scores.class0 = predictions, weights.class0=y_test,curve=TRUE)
+plot(PRROC_obj)
+plot(final_model) + theme_tq() +
+scale_color_tq() +scale_fill_tq() + labs(title = "Deep Learning Training Result")
+
+```
+
+
+```{r model creation}
+#model1 %>% save_model_tf("model1")
+datalist = list(final_model, model1,final_feat_names)
+saveRDS(final_model,file ="FINAL_MODEL.rds")
+saveRDS(final_feat_names,file ="final_feat_names.rds")
+saveRDS(model1,file ="MODEL1.rds")
+
+```
+

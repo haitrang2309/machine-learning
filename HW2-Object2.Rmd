@@ -1,0 +1,112 @@
+---
+title: "HW2-object"
+author: "Ireme, Trang, Teena"
+date: "4/20/2020"
+output: html_document
+---
+
+```{r}
+DeepLearning_function <- function(testfilename){
+  pkgs <- list("tidyverse","glmnet", "doParallel", "foreach", "pROC", "DescTools","tidyr", "mltools","data.table","splitstackshape", "caret")
+  lapply(pkgs, require, character.only = T)
+  library(keras)
+  library(tensorflow)
+  library(Sequential)
+  library(modelr)
+  library(MLeval)
+  library(plotROC)
+  final_model <- readRDS("FINAL_MODEL.RDS")
+  final_feat_names <-readRDS("final_feat_names.RDS")
+  model1 <-readRDS("MODEL1.RDS")
+
+  # Load testfilename
+  #read in csv and if blank data make NA
+  d <- read.csv(testfilename,na.strings=c("","NA"))
+
+  #remove rows with all NA
+  ind <- apply(d, 1, function(x) all(is.na(x)))
+  d <- d[!ind, ]
+
+  #find flag 0 and 1 and resample data
+  one_df <- d[which(d$Flag ==1),]
+  zero_df <- d[which(d$Flag ==0),]
+  perct_na_row <- rowSums(is.na(zero_df))/ ncol(zero_df)
+  sorttest <- sort(perct_na_row, decreasing = T, index.return=T)
+  zero_df2<- zero_df[perct_na_row < sorttest$x[28000],]
+  rm_rows_d <- rbind.data.frame(zero_df2,one_df)
+
+  #remove columns that have 20% NA
+  rm_cols_d <- rm_rows_d[,(colSums(is.na(rm_rows_d))/ nrow(rm_rows_d)) <0.2]
+  dim(rm_cols_d)
+
+  #find factor columns
+  col_types <- sapply(rm_cols_d,class)
+  indx <- which(col_types=="factor") 
+
+  #reassign NA by mode function or mean function
+  f <- function(x){
+    x[is.na(x)]<- Mode(x, na.rm = T)[1]
+    return (x)}
+
+  f2 <- function(x){
+    x[is.na(x)]<- mean(x, na.rm = T)[1]
+    return (x)}
+
+  num_df <- rm_cols_d[,-indx]
+  num_df <- apply(num_df,2,f2)
+  cat_df <- rm_cols_d[,indx]
+  cat_df <-apply(cat_df,2,f)
+
+
+  #Assign characters data to numeric 
+  num_df2 <- apply(num_df,2,as.numeric)
+
+  #one hot encoding for categorical data
+  cat_df <- as.data.frame(apply(cat_df,2, factor))
+  cat_df$ID <- seq(1:nrow(cat_df))
+  cat_df_id <- cat_df %>% select(ID, everything())
+  cat_df_hc <- one_hot(data.table(cat_df_id))
+  cat_df_hc <- as.data.frame(cat_df_hc[,-"ID"])
+
+  #keep columns that have 70% of data(1)
+  colnames_catdf <- colnames(cat_df_hc)
+  keep_col <- lapply(1:ncol(cat_df_hc), function(x){
+    if(length(which(cat_df_hc[,x]==1)) > .70*nrow(cat_df_hc)){colnames_catdf[x]}})
+  cat_df_hc <- subset(cat_df_hc, select = unlist(keep_col))
+  
+  final_df <- as.data.frame(cbind(num_df2,cat_df_hc))
+  final_df <- as.data.frame(cbind(num_df2,cat_df_hc))
+
+  # Normalize our data
+  norm_df <- final_df[,final_feat_names]
+  len <- apply(norm_df,2, function(x){length(unique(x))})
+  scaleObj <- preProcess(norm_df[,which(len > 2)], method = c("center","scale"))
+  norm_df[,which(len > 2)] <- predict(scaleObj, norm_df[,which(len > 2)])
+
+  
+  model_d <- cbind(norm_df,final_df$Flag)
+  colnames(model_d) <- c(colnames(norm_df), "Flag")
+  
+  # Load the created/trained model object for deep learning and apply it on test data
+  x_test <- model_d[,-model_d$Flag]
+  y_test <- model_d$Flag
+  
+  predictions <- model1 %>% predict_classes(as.matrix(x_test))
+  print(predictions)
+  model1 %>% evaluate(predictions, y_test, verbose = 0)
+  # print our
+  conf <- confusionMatrix(as.factor(predictions),as.factor(y_test))
+  conf
+  sensitivity <- conf$table[1]/ (conf$table[1] + conf$table[2])
+  print(paste0("Sensitivity = ", sensitivity))
+  specificity <- conf$table[4]/ (conf$table[3] + conf$table[4])
+  print(paste0("Specificity = ", specificity))
+}
+```
+
+```{r}
+# call the function
+print("Input your data test file name in here to call the function!")
+DeepLearning_function("Data.csv")
+#testfilename <- "Data.csv"
+```

@@ -1,0 +1,124 @@
+---
+title: "NaiveBayes"
+author: "Ha My Nguyen, Jing Liu, Trang Vu"
+date: "3/2/2020"
+output: 
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(kableExtra) 
+library(dplyr)
+```
+
+## Objectives <br>
+- ***Implement a Naive Bayes classifier in R to apply it to the task of classifying handwritten digits.***<br>
+- ***Efficient the code running by utilizing alternative method for loop. ***
+
+```{r}
+trainData <- read.csv("mnist_train.csv", header = FALSE)
+testData <- read.csv("mnist_test.csv", header = FALSE)
+```
+
+### Problem 1. 
+(10 points) Estimate the priors P (class) based on the frequencies of different classes in the training set. Report the values in a table. Round to 3 decimal places.
+```{r}
+P_class <- round(table(trainData$V1)/nrow(trainData),3)
+Pclass <- as.data.frame(P_class)
+colnames(Pclass) <- c("Class", "Probability")
+kable(Pclass, align = "lccrr")
+```
+--- _*Report_1*_<br>
+
+
+
+### Problem 2. 
+(15 points) Estimate the likelihoods P(Fi|class) for every pixel location i and for every digit class from 0 to 9. And report the following values in your report: For k=1 and k=5 P(F682 = 0|class = 5) and P(F772 = 1|class = 9). Round to 3 decimal places.
+```{r}
+trainData[,-1][] <- +(trainData[,-1] >= 255/2) 
+#all(trainData[,-1] == 0|1)
+m <- trainData[1,-1]
+image(1:28,1:28,t(apply(matrix(as.numeric(m), byrow = TRUE, nrow =28), 2, rev)),axes=FALSE)
+clgroup <- lapply(0:9, function(x)(trainData[trainData$V1 == x,])) 
+ll1 <- lapply(1:5, function(k)(lapply(1:10, function(c)(apply(clgroup[[c]][-1], 2, function(x){(sum(x)+k)/(nrow(clgroup[[c]]) + 2*k)}))))) 
+
+report2 <- cbind(c(round(1-ll1[[1]][[6]][[682]],3), round(ll1[[1]][[10]][[772]],3)),c(round(1-ll1[[5]][[6]][[682]],3), round(ll1[[5]][[10]][[772]],3)))
+colnames(report2) <- c("k=1", "k=5")
+rownames(report2) <- c("P(F682=0|class=5)", "P(F772=1|class=9)")
+
+report2 %>%
+  kable(format = "html", caption = "Requested Values") %>%
+  kable_styling(font = 15) %>%
+  row_spec(0, bold = T, color = "tomato")
+```
+
+--- _*Report_2*_ <br>
+
+
+### Problem 3. 
+(25 points) Perform maximum a posteriori (MAP) classification of test digits according to the learned Naive Bayes modeles. For the first test image, report the log posterior probability of P(class = 5|f1,f2,...,f784) and P (class = 7|f1, f2, ..., f784) for k=1 and k=5.
+```{r}
+testData[,-1][] <- +(testData[,-1] >= 255/2)
+#all(testData[,-1] == 0|1)
+calProb <- apply(testData[,-1], 1, function(r){lapply(1:5, function(k)(lapply(1:10, function(c)(log(prod(ll1[[k]][[c]][c(which(r ==1))]) * prod(1-ll1[[k]][[c]][c(which(r !=1))]) * P_class[[c]])))))})
+
+report3 <- cbind(c(calProb[[1]][[1]][[6]], calProb[[1]][[5]][[6]]), c(calProb[[1]][[1]][[8]], calProb[[1]][[5]][[8]]))
+colnames(report3) <- c("P(class = 5|f1,f2,...,f784)", "P(class = 7|f1,f2,...,f784)")
+rownames(report3) <- c("k = 1", "k = 5")
+
+report3 %>%
+  kable(format = "html", caption = "Requested Values") %>%
+  kable_styling(font = 15) %>%
+  row_spec(0, bold = T, color = "tomato")
+```
+--- _*Report_3*_ <br>
+
+### Problem 4. 
+(10 points) Use the true class labels of the test images from the mnist test file to check the correctness of the estimated label for each test digit. Report your performance in terms of the classification rate (percentage of all test images correctly classified) for each value of k from 1 to 5.
+
+```{r}
+predict <- lapply(1:nrow(testData), function(r)(apply(matrix(unlist(calProb[[r]]), byrow = TRUE, nrow = 5), 1, function(x)(which.max(x)-1)))) 
+predmatrix <- matrix(unlist(predict), nrow = 5)
+
+report4 <- as.data.frame(rbind(c("k=1","k=2","k=3","k=4","k=5"),apply(predmatrix, 1, function(r)mean(testData$V1 == r)))) 
+
+plot(1:5,apply(predmatrix, 1, function(r)mean(testData$V1 == r)), ylim=c(0.8410,0.8428), type = "b",main="Classification rate for each value of k from 1 to 5.",
+  xlab="K values", ylab="Accuracy rates")
+
+
+
+report4 %>%
+  kable(format = "html", caption = "The classification rate for each k from 1 to 5 ") %>%
+  kable_styling(font = 15) %>%
+  row_spec(0, bold = T, color = "tomato")
+```
+--- _*Report_4*_ <br>
+
+### Problem 5. 
+(5 points) Report your confusion matrix for the best k. This is a 10x10 matrix whose entry in row r and column c is the percentage of test images from class r that are classified as class c. (Tip: You should be able to achieve at least 70% accuracy on the test set.)
+
+```{r}
+cat("The best k is: \n")
+which.max(apply(predmatrix, 1, function(r)mean(testData$V1 == r)))
+reference <- testData[,1]
+prediction <- predmatrix[1,]
+
+confMat <- round(as.matrix(table(reference,prediction)/rowSums(table(reference,prediction)) * 100),2)
+add <- paste(confMat, "%")
+attributes(add) <- attributes(confMat)
+add %>%
+  kable(format = "html", caption = "Classification Correct Rate: Reference | Predict -->") %>%
+  kable_styling(fixed_thead = T,font = 10,bootstrap_options = c("striped", "hover", "condensed", "responsive"),full_width = F,position = "center") %>%
+  kable_styling(font = 10) %>%
+  column_spec(1, bold = T, color = "navy") %>%
+  row_spec(0, bold = T, color = "tomato")
+```
+--- _*Report_5*_ <br>
+***Conclusion: By the best k (k =1), digit 1 has the highest  classification rate (90%), while digit 5 has the lowest(73.43%).*** 
+
+## Summarization
+- We should have to improve training data for digit 5 in order to increase the classification rate.<br>
+- Seeing column or row of data set as vector is critical way to optimize the code for looping.
